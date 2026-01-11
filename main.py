@@ -48,6 +48,353 @@ def safe_text(text: str) -> str:
     # Only escape the most problematic characters for Telegram Markdown
     return text.replace('_', '\\_').replace('*', '\\*').replace('`', '\\`').replace('[', '\\[')
 
+def parse_markdown_to_entities(text: str):
+    """
+    Parse markdown-formatted text into Telegram entities.
+
+    Supports:
+    - **bold**
+    - __underline__
+    - *italic* or _italic_
+    - ~~strikethrough~~
+    - ||spoiler||
+    - `code`
+    - ```code block```
+    - [text](url) for links
+    - {newline} for line breaks
+
+    Returns tuple: (plain_text, entities_list)
+    """
+    if not text:
+        return "", []
+
+    # Replace {newline} placeholder with actual newlines
+    text = text.replace('{newline}', '\n')
+
+    # Check if telethon is available
+    if not TELETHON_AVAILABLE:
+        return text, []
+
+    entities = []
+    plain_text = []
+    offset = 0
+    i = 0
+
+    while i < len(text):
+        # Bold: **text**
+        if text[i:i+2] == '**':
+            end = text.find('**', i+2)
+            if end != -1:
+                content = text[i+2:end]
+                entities.append(MessageEntityBold(offset, len(content)))
+                plain_text.append(content)
+                offset += len(content)
+                i = end + 2
+                continue
+
+        # Underline: __text__
+        if text[i:i+2] == '__':
+            end = text.find('__', i+2)
+            if end != -1:
+                content = text[i+2:end]
+                entities.append(MessageEntityUnderline(offset, len(content)))
+                plain_text.append(content)
+                offset += len(content)
+                i = end + 2
+                continue
+
+        # Strikethrough: ~~text~~
+        if text[i:i+2] == '~~':
+            end = text.find('~~', i+2)
+            if end != -1:
+                content = text[i+2:end]
+                entities.append(MessageEntityStrike(offset, len(content)))
+                plain_text.append(content)
+                offset += len(content)
+                i = end + 2
+                continue
+
+        # Spoiler: ||text||
+        if text[i:i+2] == '||':
+            end = text.find('||', i+2)
+            if end != -1:
+                content = text[i+2:end]
+                entities.append(MessageEntitySpoiler(offset, len(content)))
+                plain_text.append(content)
+                offset += len(content)
+                i = end + 2
+                continue
+
+        # Italic: *text* or _text_ (single char)
+        if text[i] in ['*', '_'] and text[i:i+2] not in ['**', '__', '~~', '||']:
+            marker = text[i]
+            end = text.find(marker, i+1)
+            if end != -1 and end > i+1:
+                content = text[i+1:end]
+                entities.append(MessageEntityItalic(offset, len(content)))
+                plain_text.append(content)
+                offset += len(content)
+                i = end + 1
+                continue
+
+        # Code block: ```text```
+        if text[i:i+3] == '```':
+            end = text.find('```', i+3)
+            if end != -1:
+                content = text[i+3:end]
+                entities.append(MessageEntityPre(offset, len(content), ''))
+                plain_text.append(content)
+                offset += len(content)
+                i = end + 3
+                continue
+
+        # Inline code: `text`
+        if text[i] == '`':
+            end = text.find('`', i+1)
+            if end != -1:
+                content = text[i+1:end]
+                entities.append(MessageEntityCode(offset, len(content)))
+                plain_text.append(content)
+                offset += len(content)
+                i = end + 1
+                continue
+
+        # Link: [text](url)
+        if text[i] == '[':
+            text_end = text.find(']', i+1)
+            if text_end != -1 and text_end+1 < len(text) and text[text_end+1] == '(':
+                url_end = text.find(')', text_end+2)
+                if url_end != -1:
+                    link_text = text[i+1:text_end]
+                    url = text[text_end+2:url_end]
+                    entities.append(MessageEntityTextUrl(offset, len(link_text), url))
+                    plain_text.append(link_text)
+                    offset += len(link_text)
+                    i = url_end + 1
+                    continue
+
+        # Regular character
+        plain_text.append(text[i])
+        offset += 1
+        i += 1
+
+    return ''.join(plain_text), entities
+
+def serialize_entities(entities):
+    """Convert Telegram entities to JSON-serializable format."""
+    if not entities:
+        return []
+
+    serialized = []
+    for entity in entities:
+        entity_dict = {
+            '_': entity.__class__.__name__,
+            'offset': entity.offset,
+            'length': entity.length
+        }
+        # Add URL for TextUrl entities
+        if hasattr(entity, 'url'):
+            entity_dict['url'] = entity.url
+        # Add language for Pre entities
+        if hasattr(entity, 'language'):
+            entity_dict['language'] = entity.language
+        serialized.append(entity_dict)
+    return serialized
+
+def deserialize_entities(entities_data):
+    """Convert serialized entities back to Telegram entity objects."""
+    if not entities_data:
+        return []
+
+    # Check if telethon is available
+    if not TELETHON_AVAILABLE:
+        return []
+
+    entities = []
+    entity_map = {
+        'MessageEntityBold': MessageEntityBold,
+        'MessageEntityItalic': MessageEntityItalic,
+        'MessageEntityCode': MessageEntityCode,
+        'MessageEntityPre': MessageEntityPre,
+        'MessageEntityTextUrl': MessageEntityTextUrl,
+        'MessageEntityStrike': MessageEntityStrike,
+        'MessageEntityUnderline': MessageEntityUnderline,
+        'MessageEntitySpoiler': MessageEntitySpoiler
+    }
+
+    for data in entities_data:
+        if not isinstance(data, dict):
+            continue
+
+        entity_type = data.get('_')
+        offset = data.get('offset', 0)
+        length = data.get('length', 0)
+
+        if entity_type in entity_map:
+            if entity_type == 'MessageEntityTextUrl':
+                url = data.get('url', '')
+                entities.append(entity_map[entity_type](offset, length, url))
+            elif entity_type == 'MessageEntityPre':
+                language = data.get('language', '')
+                entities.append(entity_map[entity_type](offset, length, language))
+            else:
+                entities.append(entity_map[entity_type](offset, length))
+
+    return entities
+
+def extract_media_attributes(msg):
+    """
+    Extract all media attributes from original message to preserve format.
+
+    Returns tuple: (media_type, attributes_list, mime_type, thumb)
+    """
+    if not TELETHON_AVAILABLE or not msg:
+        return None, [], None, None
+
+    attributes = []
+    mime_type = None
+    thumb = None
+    media_type = None
+
+    try:
+        # PHOTO
+        if msg.photo:
+            media_type = 'photo'
+            # Photos don't need attributes, Telethon handles them
+            return media_type, attributes, mime_type, thumb
+
+        # VIDEO NOTE
+        if msg.video_note:
+            media_type = 'video_note'
+            if msg.document:
+                for attr in getattr(msg.document, 'attributes', []):
+                    if hasattr(attr, 'duration'):
+                        attributes.append(types.DocumentAttributeVideo(
+                            duration=getattr(attr, 'duration', 0),
+                            w=getattr(attr, 'w', 384),
+                            h=getattr(attr, 'h', 384),
+                            round_message=True
+                        ))
+                mime_type = getattr(msg.document, 'mime_type', 'video/mp4')
+            return media_type, attributes, mime_type, thumb
+
+        # VOICE
+        if msg.voice:
+            media_type = 'voice'
+            if msg.document:
+                for attr in getattr(msg.document, 'attributes', []):
+                    if hasattr(attr, 'duration'):
+                        attributes.append(types.DocumentAttributeAudio(
+                            duration=getattr(attr, 'duration', 0),
+                            voice=True
+                        ))
+                        break
+                mime_type = getattr(msg.document, 'mime_type', 'audio/ogg')
+            return media_type, attributes, mime_type, thumb
+
+        # VIDEO
+        if msg.video:
+            media_type = 'video'
+            if msg.document:
+                for attr in getattr(msg.document, 'attributes', []):
+                    if hasattr(attr, 'duration') and hasattr(attr, 'w'):
+                        attributes.append(types.DocumentAttributeVideo(
+                            duration=getattr(attr, 'duration', 0),
+                            w=getattr(attr, 'w', 1280),
+                            h=getattr(attr, 'h', 720),
+                            supports_streaming=True
+                        ))
+                        break
+                    # Also check for filename
+                    if hasattr(attr, 'file_name') and attr.file_name:
+                        attributes.append(types.DocumentAttributeFilename(attr.file_name))
+                mime_type = getattr(msg.document, 'mime_type', 'video/mp4')
+                thumb = getattr(msg.document, 'thumbs', None)
+                if thumb and len(thumb) > 0:
+                    thumb = thumb[-1]  # Get largest thumbnail
+            return media_type, attributes, mime_type, thumb
+
+        # GIF/ANIMATION
+        if msg.gif:
+            media_type = 'gif'
+            if msg.document:
+                for attr in getattr(msg.document, 'attributes', []):
+                    # Preserve animation attribute
+                    if hasattr(attr, 'w') and hasattr(attr, 'h'):
+                        attributes.append(types.DocumentAttributeVideo(
+                            duration=0,
+                            w=getattr(attr, 'w', 320),
+                            h=getattr(attr, 'h', 320),
+                            supports_streaming=False
+                        ))
+                    if hasattr(attr, 'file_name') and attr.file_name:
+                        attributes.append(types.DocumentAttributeFilename(attr.file_name))
+                mime_type = getattr(msg.document, 'mime_type', 'video/mp4')
+            return media_type, attributes, mime_type, thumb
+
+        # STICKER
+        if msg.sticker:
+            media_type = 'sticker'
+            if msg.document:
+                # Preserve ALL sticker attributes (important for animated stickers)
+                for attr in getattr(msg.document, 'attributes', []):
+                    attributes.append(attr)
+                mime_type = getattr(msg.document, 'mime_type', 'image/webp')
+            return media_type, attributes, mime_type, thumb
+
+        # AUDIO
+        if msg.audio:
+            media_type = 'audio'
+            if msg.document:
+                duration = 0
+                title = None
+                performer = None
+                filename = None
+
+                for attr in getattr(msg.document, 'attributes', []):
+                    if hasattr(attr, 'duration'):
+                        duration = getattr(attr, 'duration', 0)
+                    if hasattr(attr, 'title'):
+                        title = getattr(attr, 'title', None)
+                    if hasattr(attr, 'performer'):
+                        performer = getattr(attr, 'performer', None)
+                    if hasattr(attr, 'file_name'):
+                        filename = getattr(attr, 'file_name', None)
+
+                # Add audio attribute
+                if duration or title or performer:
+                    attributes.append(types.DocumentAttributeAudio(
+                        duration=duration,
+                        title=title,
+                        performer=performer,
+                        voice=False
+                    ))
+                # Add filename
+                if filename:
+                    attributes.append(types.DocumentAttributeFilename(filename))
+
+                mime_type = getattr(msg.document, 'mime_type', 'audio/mpeg')
+            return media_type, attributes, mime_type, thumb
+
+        # DOCUMENT
+        if msg.document:
+            media_type = 'document'
+            # Extract ALL document attributes to preserve format
+            for attr in getattr(msg.document, 'attributes', []):
+                attributes.append(attr)
+            mime_type = getattr(msg.document, 'mime_type', None)
+            thumb = getattr(msg.document, 'thumbs', None)
+            if thumb and len(thumb) > 0:
+                thumb = thumb[-1]
+            return media_type, attributes, mime_type, thumb
+
+    except Exception as e:
+        import traceback
+        log.error(f"Error extracting media attributes: {e}")
+        log.error(traceback.format_exc())
+
+    return media_type, attributes, mime_type, thumb
+
 # Default filters configuration (all OFF = keep everything)
 DEFAULT_FILTERS = {
     # Media type filters (ignore/skip these)
@@ -140,7 +487,12 @@ DEFAULT_MODIFY = {
 TELETHON_AVAILABLE = True
 try:
     from telethon import TelegramClient, events, errors
-    from telethon.tl.types import User, Channel, Chat, PeerChannel
+    from telethon.tl.types import (
+        User, Channel, Chat, PeerChannel,
+        MessageEntityBold, MessageEntityItalic, MessageEntityCode,
+        MessageEntityPre, MessageEntityTextUrl, MessageEntityStrike,
+        MessageEntityUnderline, MessageEntitySpoiler
+    )
     from telethon.tl import types
 except ImportError:
     TELETHON_AVAILABLE = False
@@ -1756,15 +2108,30 @@ class UserSessionManager:
                 caption_text = caption_text.strip()
 
             # Apply modify features
+            # Track if we should use entities
+            caption_entities = None
+
+            # Apply custom caption if enabled (replaces original caption)
+            if modify.get('caption_enabled', False):
+                custom_caption = modify.get('caption_text', '')
+                if custom_caption:
+                    caption_text = custom_caption
+                    # Get pre-parsed entities for custom caption (deserialize from storage)
+                    caption_entities = deserialize_entities(modify.get('caption_entities', []))
+
             if modify.get('header_enabled', False):
                 header = modify.get('header_text', '')
                 if header:
                     caption_text = f"{header}\n{caption_text}" if caption_text else header
+                    # Clear entities if modifying after custom caption
+                    caption_entities = None
 
             if modify.get('footer_enabled', False):
                 footer = modify.get('footer_text', '')
                 if footer:
                     caption_text = f"{caption_text}\n{footer}" if caption_text else footer
+                    # Clear entities if modifying after custom caption
+                    caption_entities = None
 
             # Check if caption cleaning or modification is active
             caption_cleaning_active = any([
@@ -1779,6 +2146,7 @@ class UserSessionManager:
             modify_caption_active = any([
                 modify.get('header_enabled', False),
                 modify.get('footer_enabled', False),
+                modify.get('caption_enabled', False),
                 modify.get('replace_enabled', False),
                 modify.get('watermark_enabled', False)  # Watermark requires copy mode
             ])
@@ -1842,12 +2210,18 @@ class UserSessionManager:
 
                         if files:
                             try:
-                                # Send as album (first file gets caption)
+                                # Send as album (first file gets caption with entities)
+                                send_kwargs = {}
+                                if caption_text:
+                                    send_kwargs['caption'] = caption_text
+                                    if caption_entities:
+                                        send_kwargs['formatting_entities'] = caption_entities
+
                                 await retry_on_timeout(
                                     client.send_file,
                                     dest_entity,
                                     files,
-                                    caption=caption_text if caption_text else None
+                                    **send_kwargs
                                 )
                                 log.info(f"📚 [{phone_ref}] ALBUM ({len(files)} files) -> {dest}")
                             finally:
@@ -2147,19 +2521,37 @@ class UserSessionManager:
                                     else:
                                         caption_text = caption_text.replace(old, new)
 
-                    # 4. HEADER TEXT - Add text to beginning
+                    # 4. CUSTOM CAPTION - Replace original caption with custom caption
+                    # Store caption entities for formatted captions
+                    custom_caption_entities = None
+                    if modify.get('caption_enabled', False):
+                        custom_caption = modify.get('caption_text', '')
+                        if custom_caption:
+                            caption_text = custom_caption
+                            # Get pre-parsed entities for custom caption (deserialize from storage)
+                            custom_caption_entities = deserialize_entities(modify.get('caption_entities', []))
+                            # Clear original entities since we're replacing caption
+                            caption_entities = custom_caption_entities
+
+                    # 5. HEADER TEXT - Add text to beginning
                     if modify.get('header_enabled', False):
                         header = modify.get('header_text', '')
                         if header:
                             caption_text = f"{header}\n{caption_text}" if caption_text else header
+                            # Clear entities if modifying after custom caption
+                            if custom_caption_entities:
+                                caption_entities = None
 
-                    # 5. FOOTER TEXT - Add text to end
+                    # 6. FOOTER TEXT - Add text to end
                     if modify.get('footer_enabled', False):
                         footer = modify.get('footer_text', '')
                         if footer:
                             caption_text = f"{caption_text}\n{footer}" if caption_text else footer
+                            # Clear entities if modifying after custom caption
+                            if custom_caption_entities:
+                                caption_entities = None
 
-                    # 6. DELAY - Wait before forwarding
+                    # 7. DELAY - Wait before forwarding
                     if modify.get('delay_enabled', False):
                         delay_seconds = modify.get('delay_seconds', 0)
                         if delay_seconds > 0:
@@ -2250,6 +2642,7 @@ class UserSessionManager:
                             modify_caption_active = any([
                                 modify.get('header_enabled', False),
                                 modify.get('footer_enabled', False),
+                                modify.get('caption_enabled', False),
                                 modify.get('replace_enabled', False),
                                 modify.get('watermark_enabled', False)  # Watermark requires copy mode
                             ])
@@ -2487,13 +2880,18 @@ class UserSessionManager:
                                                 if upload_file_size > 10 * 1024 * 1024:
                                                     caption_kwargs['progress_callback'] = upload_progress
 
+                                                # Extract media attributes for format preservation
+                                                media_type, media_attrs, media_mime, media_thumb = extract_media_attributes(msg)
+
                                                 # PHOTO with caption
                                                 if msg.photo:
                                                     await retry_on_timeout(
                                                         client.send_file,
                                                         dest_entity,
                                                         temp_file,
-                                                        force_document=False,
+                                                        force_document=False,  # Keep as photo
+                                                        attributes=media_attrs if media_attrs else None,
+                                                        thumb=media_thumb,
                                                         **caption_kwargs
                                                     )
                                                     log.info(f"📷 [{phone_ref}] PHOTO -> {dest}")
@@ -2504,29 +2902,21 @@ class UserSessionManager:
                                                         client.send_file,
                                                         dest_entity,
                                                         temp_file,
-                                                        video_note=True
+                                                        video_note=True,
+                                                        attributes=media_attrs if media_attrs else None,
+                                                        mime_type=media_mime
                                                     )
                                                     log.info(f"⭕ [{phone_ref}] VIDEO_NOTE -> {dest}")
                                                 
                                                 # VOICE MESSAGE
                                                 elif msg.voice:
-                                                    # Get voice duration
-                                                    voice_attrs = []
-                                                    if msg.document and types:
-                                                        for attr in getattr(msg.document, 'attributes', []):
-                                                            if hasattr(attr, 'duration'):
-                                                                voice_attrs.append(types.DocumentAttributeAudio(
-                                                                    duration=attr.duration,
-                                                                    voice=True
-                                                                ))
-                                                                break
-                                                    
                                                     await retry_on_timeout(
                                                         client.send_file,
                                                         dest_entity,
                                                         temp_file,
                                                         voice_note=True,
-                                                        attributes=voice_attrs if voice_attrs else None
+                                                        attributes=media_attrs if media_attrs else None,
+                                                        mime_type=media_mime
                                                     )
                                                     # Voice doesn't support caption, send separately
                                                     if original_text:
@@ -2541,26 +2931,15 @@ class UserSessionManager:
                                                 
                                                 # VIDEO with caption
                                                 elif msg.video:
-                                                    # Get video attributes
-                                                    video_attrs = []
-                                                    if msg.document and types:
-                                                        for attr in getattr(msg.document, 'attributes', []):
-                                                            if hasattr(attr, 'duration') and hasattr(attr, 'w'):
-                                                                video_attrs.append(types.DocumentAttributeVideo(
-                                                                    duration=getattr(attr, 'duration', 0),
-                                                                    w=getattr(attr, 'w', 1280),
-                                                                    h=getattr(attr, 'h', 720),
-                                                                    supports_streaming=True
-                                                                ))
-                                                                break
-                                                    
                                                     await retry_on_timeout(
                                                         client.send_file,
                                                         dest_entity,
                                                         temp_file,
                                                         supports_streaming=True,
-                                                        force_document=False,
-                                                        attributes=video_attrs if video_attrs else None,
+                                                        force_document=False,  # Keep as video, not document
+                                                        attributes=media_attrs if media_attrs else None,
+                                                        mime_type=media_mime,
+                                                        thumb=media_thumb,
                                                         **caption_kwargs
                                                     )
                                                     log.info(f"🎥 [{phone_ref}] VIDEO -> {dest}")
@@ -2572,6 +2951,9 @@ class UserSessionManager:
                                                         dest_entity,
                                                         temp_file,
                                                         force_document=False,
+                                                        attributes=media_attrs if media_attrs else None,
+                                                        mime_type=media_mime,
+                                                        thumb=media_thumb,
                                                         **caption_kwargs
                                                     )
                                                     log.info(f"🎞️ [{phone_ref}] GIF -> {dest}")
@@ -2582,65 +2964,36 @@ class UserSessionManager:
                                                         client.send_file,
                                                         dest_entity,
                                                         temp_file,
-                                                        force_document=False
+                                                        force_document=False,
+                                                        attributes=media_attrs if media_attrs else None,
+                                                        mime_type=media_mime
                                                     )
                                                     log.info(f"🎨 [{phone_ref}] STICKER -> {dest}")
                                                 
                                                 # AUDIO (music) with caption
                                                 elif msg.audio:
-                                                    # Get audio attributes (title, performer, duration)
-                                                    audio_attrs = []
-                                                    if msg.document and types:
-                                                        duration = 0
-                                                        title = None
-                                                        performer = None
-                                                        filename = None
-                                                        for attr in getattr(msg.document, 'attributes', []):
-                                                            if hasattr(attr, 'duration'):
-                                                                duration = getattr(attr, 'duration', 0)
-                                                            if hasattr(attr, 'title'):
-                                                                title = getattr(attr, 'title', None)
-                                                            if hasattr(attr, 'performer'):
-                                                                performer = getattr(attr, 'performer', None)
-                                                            if hasattr(attr, 'file_name'):
-                                                                filename = getattr(attr, 'file_name', None)
-                                                        
-                                                        if duration or title or performer:
-                                                            audio_attrs.append(types.DocumentAttributeAudio(
-                                                                duration=duration,
-                                                                title=title,
-                                                                performer=performer,
-                                                                voice=False
-                                                            ))
-                                                        if filename:
-                                                            audio_attrs.append(types.DocumentAttributeFilename(filename))
-                                                    
                                                     await retry_on_timeout(
                                                         client.send_file,
                                                         dest_entity,
                                                         temp_file,
                                                         force_document=False,
-                                                        attributes=audio_attrs if audio_attrs else None,
+                                                        attributes=media_attrs if media_attrs else None,
+                                                        mime_type=media_mime,
+                                                        thumb=media_thumb,
                                                         **caption_kwargs
                                                     )
                                                     log.info(f"🎵 [{phone_ref}] AUDIO -> {dest}")
 
                                                 # DOCUMENT (file) with caption
                                                 elif msg.document:
-                                                    # Get original filename
-                                                    doc_attrs = []
-                                                    if msg.document and types:
-                                                        for attr in getattr(msg.document, 'attributes', []):
-                                                            if hasattr(attr, 'file_name') and attr.file_name:
-                                                                doc_attrs.append(types.DocumentAttributeFilename(attr.file_name))
-                                                                break
-
                                                     await retry_on_timeout(
                                                         client.send_file,
                                                         dest_entity,
                                                         temp_file,
                                                         force_document=True,
-                                                        attributes=doc_attrs if doc_attrs else None,
+                                                        attributes=media_attrs if media_attrs else None,
+                                                        mime_type=media_mime,
+                                                        thumb=media_thumb,
                                                         **caption_kwargs
                                                     )
                                                     log.info(f"📄 [{phone_ref}] DOCUMENT -> {dest}")
@@ -2651,6 +3004,9 @@ class UserSessionManager:
                                                         client.send_file,
                                                         dest_entity,
                                                         temp_file,
+                                                        attributes=media_attrs if media_attrs else None,
+                                                        mime_type=media_mime,
+                                                        thumb=media_thumb,
                                                         **caption_kwargs
                                                     )
                                                     log.info(f"📎 [{phone_ref}] MEDIA -> {dest}")
@@ -2764,6 +3120,7 @@ class ConnectState:
     MODIFY_WATERMARK_OPACITY = "modify_watermark_opacity"
     MODIFY_WATERMARK_ROTATION = "modify_watermark_rotation"
     MODIFY_WATERMARK_SIZE = "modify_watermark_size"
+    MODIFY_CAPTION = "modify_caption"
     # Edit rule states
     EDIT_RULE_SOURCE = "edit_rule_source"
     EDIT_RULE_DEST = "edit_rule_dest"
@@ -2974,6 +3331,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_modify_header(query, user)
         elif data == "modify_footer":
             await handle_modify_footer(query, user)
+        elif data == "modify_caption":
+            await handle_modify_caption(query, user)
         elif data == "modify_buttons":
             await handle_modify_buttons(query, user)
         elif data == "modify_delay":
@@ -3223,6 +3582,13 @@ def build_modify_keyboard(modify: dict) -> InlineKeyboardMarkup:
     watermark_icon = "📝" if watermark_type == 'text' else "🖼"
     buttons.append([InlineKeyboardButton(f"{watermark_status} {watermark_icon} Watermark", callback_data="modify_watermark")])
 
+    # Caption
+    caption_status = "✅" if modify.get('caption_enabled') else "⬜"
+    caption_text = modify.get('caption_text', '')
+    caption_preview = caption_text[:20] + '...' if len(caption_text) > 20 else caption_text
+    caption_display = caption_preview if caption_text else 'Not set'
+    buttons.append([InlineKeyboardButton(f"{caption_status} 💬 Caption: {caption_display}", callback_data="modify_caption")])
+
     # Navigation
     buttons.append([
         InlineKeyboardButton("🔙 Back", callback_data="modify_back"),
@@ -3249,6 +3615,7 @@ async def show_modify_keyboard(query, user, state):
         state.modify.get('delay_enabled', False),
         state.modify.get('history_enabled', False),
         state.modify.get('watermark_enabled', False),
+        state.modify.get('caption_enabled', False),
     ])
     
     text = (
@@ -3430,7 +3797,8 @@ async def handle_modify_back(query, user):
         if not state or state.step not in [ConnectState.ADD_RULE_MODIFY, ConnectState.MODIFY_RENAME,
                                            ConnectState.MODIFY_BLOCK_WORDS, ConnectState.MODIFY_WHITELIST,
                                            ConnectState.MODIFY_REPLACE, ConnectState.MODIFY_HEADER,
-                                           ConnectState.MODIFY_FOOTER, ConnectState.MODIFY_BUTTONS,
+                                           ConnectState.MODIFY_FOOTER, ConnectState.MODIFY_CAPTION,
+                                           ConnectState.MODIFY_BUTTONS,
                                            ConnectState.MODIFY_DELAY, ConnectState.MODIFY_HISTORY,
                                            ConnectState.MODIFY_WATERMARK, ConnectState.MODIFY_WATERMARK_TEXT,
                                            ConnectState.MODIFY_WATERMARK_LOGO]:
@@ -3638,6 +4006,50 @@ async def handle_modify_footer(query, user):
                 [InlineKeyboardButton("🔙 Back", callback_data="modify_back_to_main")]
             ]),
             parse_mode='Markdown'
+        )
+
+async def handle_modify_caption(query, user):
+    """Configure caption for media."""
+    lock = await get_connect_lock(user.id)
+    async with lock:
+        state = connect_states.get(user.id)
+        if not state or state.step != ConnectState.ADD_RULE_MODIFY:
+            await query.edit_message_text("❌ Session expired.", reply_markup=main_menu_kb())
+            return
+
+        state.step = ConnectState.MODIFY_CAPTION
+        caption = state.modify.get('caption_text', '')
+        enabled = state.modify.get('caption_enabled', False)
+
+        await query.edit_message_text(
+            f"*💬 Custom Caption*\n\n"
+            f"Status: {'✅ Enabled' if enabled else '⬜ Disabled'}\n"
+            f"Current: `{caption[:100] if caption else 'None'}`\n\n"
+            f"This caption will *REPLACE* the original caption when forwarding media\\.\n\n"
+            f"*All Telegram formatting supported:*\n"
+            f"• `**bold**` → **bold**\n"
+            f"• `__underline__` → underline\n"
+            f"• `*italic*` or `_italic_` → _italic_\n"
+            f"• `~~strike~~` → strikethrough\n"
+            f"• `||spoiler||` → hidden/spoiler\n"
+            f"• `` `code` `` → `monospace`\n"
+            f"• `` ```code block``` `` → multi\\-line code\n"
+            f"• `[text](url)` → clickable link\n"
+            f"• `{{newline}}` → line break\n\n"
+            f"*Example:*\n"
+            f"```\n"
+            f"**New Post** {{newline}}\n"
+            f"Check _latest_ update with __important__ info\\!\n"
+            f"~~Old price~~ ||New price|| available\\.\n"
+            f"Use `code` or visit [Site](https://example\\.com)\n"
+            f"```\n\n"
+            f"Send your formatted caption:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"{'🔴 Disable' if enabled else '🟢 Enable'}", callback_data="toggle_caption")],
+                [InlineKeyboardButton("🗑️ Clear", callback_data="clear_caption")],
+                [InlineKeyboardButton("🔙 Back", callback_data="modify_back_to_main")]
+            ]),
+            parse_mode='MarkdownV2'
         )
 
 async def handle_modify_buttons(query, user):
@@ -4059,6 +4471,7 @@ async def handle_modify_toggle(query, user, data: str):
             'delay': 'delay_enabled',
             'history': 'history_enabled',
             'watermark': 'watermark_enabled',
+            'caption': 'caption_enabled',
         }
         
         key = toggle_map.get(toggle_type)
@@ -4135,13 +4548,17 @@ async def handle_clear_option(query, user, data: str):
             'header': ('header_text', '', 'header_enabled'),
             'footer': ('footer_text', '', 'footer_enabled'),
             'buttons': ('buttons', [], 'buttons_enabled'),
+            'caption': ('caption_text', '', 'caption_enabled'),
         }
         
         if option in clear_map:
             key, default, enabled_key = clear_map[option]
             state.modify[key] = default
             state.modify[enabled_key] = False
-        
+            # Also clear caption entities when clearing caption
+            if option == 'caption':
+                state.modify['caption_entities'] = []
+
         # Go back to modify main
         state.step = ConnectState.ADD_RULE_MODIFY
         await show_modify_keyboard(query, user, state)
@@ -4964,6 +5381,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await handle_modify_header_input(update, user, state, text)
             elif state.step == ConnectState.MODIFY_FOOTER:
                 await handle_modify_footer_input(update, user, state, text)
+            elif state.step == ConnectState.MODIFY_CAPTION:
+                await handle_modify_caption_input(update, user, state, text)
             elif state.step == ConnectState.MODIFY_BUTTONS:
                 await handle_modify_buttons_input(update, user, state, text)
             elif state.step == ConnectState.MODIFY_WATERMARK_TEXT:
@@ -5322,9 +5741,33 @@ async def handle_modify_footer_input(update, user, state, text: str):
     state.modify['footer_text'] = footer
     state.modify['footer_enabled'] = True
     state.step = ConnectState.ADD_RULE_MODIFY
-    
+
     await update.message.reply_text(
         f"✅ Footer set",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back to Modify", callback_data="modify_back_to_main")]
+        ])
+    )
+
+async def handle_modify_caption_input(update, user, state, text: str):
+    """Handle caption text input."""
+    # Parse markdown to plain text and entities
+    plain_text, entities = parse_markdown_to_entities(text.strip())
+
+    # Store both text and serialized entities (for database persistence)
+    state.modify['caption_text'] = plain_text
+    state.modify['caption_entities'] = serialize_entities(entities)
+    state.modify['caption_enabled'] = True
+    state.step = ConnectState.ADD_RULE_MODIFY
+
+    # Preview formatted caption
+    preview = plain_text[:100] + '...' if len(plain_text) > 100 else plain_text
+    entity_count = len(entities)
+    entity_info = f" ({entity_count} format{'s' if entity_count != 1 else ''})" if entity_count > 0 else ""
+
+    await update.message.reply_text(
+        f"✅ Caption set{entity_info}\n\n"
+        f"Preview: {preview}",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔙 Back to Modify", callback_data="modify_back_to_main")]
         ])
@@ -5659,6 +6102,7 @@ async def on_startup(app):
         health_server_instance = None
 
     db = DatabaseManager(DATABASE_FILE)
+    await db.ensure_initialized()
     session_manager = UserSessionManager(db)
 
     if TELETHON_AVAILABLE:
