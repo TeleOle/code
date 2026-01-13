@@ -1,17 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Multi-User Telegram Auto-Forward Bot
-=====================================
-Features:
-- Multiple sources per rule (comma-separated)
-- Multiple destinations per rule (comma-separated)
-- Per-user session management
-- SQLite database storage
-- Large file support (up to 2GB) with MTProto optimization
-- Progress tracking for downloads/uploads (files > 10MB)
-- Automatic chunking and optimized transfer
-"""
 
 import asyncio
 import logging
@@ -424,9 +410,6 @@ DEFAULT_FILTERS = {
     'clean_emoji': False,     # Remove emojis from caption
     'clean_phone': False,     # Remove phone numbers from caption
     'clean_email': False,     # Remove email addresses from caption
-
-    # Media effect options
-    'apply_spoiler': False,   # Apply spoiler effect to photos and videos (blurred, shimmering layer)
 }
 
 # Default modify content configuration
@@ -481,6 +464,14 @@ DEFAULT_MODIFY = {
     'watermark_opacity': 50,  # 10-100%
     'watermark_rotation': 0,  # 0-359 degrees
     'watermark_size': 10,  # 10-100% (for text: font size, for logo: scale)
+
+    # Caption replacement
+    'caption_enabled': False,
+    'caption_text': '',  # Replace caption with custom text
+    'caption_entities': [],  # Message entities for formatting
+
+    # Spoiler effect
+    'apply_spoiler': False,  # Apply spoiler effect to photos and videos (blur/shimmer effect)
 }
 
 # Optional dependency handling
@@ -2148,7 +2139,8 @@ class UserSessionManager:
                 modify.get('footer_enabled', False),
                 modify.get('caption_enabled', False),
                 modify.get('replace_enabled', False),
-                modify.get('watermark_enabled', False)  # Watermark requires copy mode
+                modify.get('watermark_enabled', False),  # Watermark requires copy mode
+                modify.get('apply_spoiler', False)  # Spoiler effect requires copy mode
             ])
 
             # Use copy mode if explicitly selected OR if caption/content modification is needed
@@ -2216,6 +2208,10 @@ class UserSessionManager:
                                     send_kwargs['caption'] = caption_text
                                     if caption_entities:
                                         send_kwargs['formatting_entities'] = caption_entities
+
+                                # Apply spoiler effect if enabled (pass as list for albums)
+                                if modify.get('apply_spoiler', False):
+                                    send_kwargs['spoiler'] = [True] * len(files)
 
                                 await retry_on_timeout(
                                     client.send_file,
@@ -2644,7 +2640,8 @@ class UserSessionManager:
                                 modify.get('footer_enabled', False),
                                 modify.get('caption_enabled', False),
                                 modify.get('replace_enabled', False),
-                                modify.get('watermark_enabled', False)  # Watermark requires copy mode
+                                modify.get('watermark_enabled', False),  # Watermark requires copy mode
+                                modify.get('apply_spoiler', False)  # Spoiler effect requires copy mode
                             ])
 
                             # Use copy mode if explicitly selected OR if caption/content modification is needed
@@ -2879,6 +2876,9 @@ class UserSessionManager:
                                                 # Add progress callback for large files
                                                 if upload_file_size > 10 * 1024 * 1024:
                                                     caption_kwargs['progress_callback'] = upload_progress
+                                                # Apply spoiler effect if enabled
+                                                if modify.get('apply_spoiler', False):
+                                                    caption_kwargs['spoiler'] = True
 
                                                 # Extract media attributes for format preservation
                                                 media_type, media_attrs, media_mime, media_thumb = extract_media_attributes(msg)
@@ -3333,6 +3333,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_modify_footer(query, user)
         elif data == "modify_caption":
             await handle_modify_caption(query, user)
+        elif data == "modify_spoiler":
+            await handle_modify_spoiler(query, user)
         elif data == "modify_buttons":
             await handle_modify_buttons(query, user)
         elif data == "modify_delay":
@@ -3589,6 +3591,10 @@ def build_modify_keyboard(modify: dict) -> InlineKeyboardMarkup:
     caption_display = caption_preview if caption_text else 'Not set'
     buttons.append([InlineKeyboardButton(f"{caption_status} 💬 Caption: {caption_display}", callback_data="modify_caption")])
 
+    # Spoiler
+    spoiler_status = "✅" if modify.get('apply_spoiler') else "⬜"
+    buttons.append([InlineKeyboardButton(f"{spoiler_status} 🙈 Spoiler Effect", callback_data="modify_spoiler")])
+
     # Navigation
     buttons.append([
         InlineKeyboardButton("🔙 Back", callback_data="modify_back"),
@@ -3616,6 +3622,7 @@ async def show_modify_keyboard(query, user, state):
         state.modify.get('history_enabled', False),
         state.modify.get('watermark_enabled', False),
         state.modify.get('caption_enabled', False),
+        state.modify.get('apply_spoiler', False),
     ])
     
     text = (
@@ -4052,6 +4059,34 @@ async def handle_modify_caption(query, user):
             parse_mode='MarkdownV2'
         )
 
+async def handle_modify_spoiler(query, user):
+    """Configure spoiler effect for photos and videos."""
+    lock = await get_connect_lock(user.id)
+    async with lock:
+        state = connect_states.get(user.id)
+        if not state or state.step != ConnectState.ADD_RULE_MODIFY:
+            await query.edit_message_text("❌ Session expired.", reply_markup=main_menu_kb())
+            return
+
+        enabled = state.modify.get('apply_spoiler', False)
+
+        await query.edit_message_text(
+            f"*🙈 Spoiler Effect*\n\n"
+            f"Status: {'✅ Enabled' if enabled else '⬜ Disabled'}\n\n"
+            f"When enabled, applies a blur/shimmer effect to photos and videos\\.\n\n"
+            f"⚠️ *Important:*\n"
+            f"• Works with photos and videos only\n"
+            f"• Recipient sees media with blur effect\n"
+            f"• Tap to reveal the media\n"
+            f"• Only works in Copy mode\n\n"
+            f"Toggle the spoiler effect:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"{'🔴 Disable' if enabled else '🟢 Enable'}", callback_data="toggle_spoiler")],
+                [InlineKeyboardButton("🔙 Back", callback_data="modify_back_to_main")]
+            ]),
+            parse_mode='MarkdownV2'
+        )
+
 async def handle_modify_buttons(query, user):
     """Configure link buttons."""
     lock = await get_connect_lock(user.id)
@@ -4472,6 +4507,7 @@ async def handle_modify_toggle(query, user, data: str):
             'history': 'history_enabled',
             'watermark': 'watermark_enabled',
             'caption': 'caption_enabled',
+            'spoiler': 'apply_spoiler',
         }
         
         key = toggle_map.get(toggle_type)
@@ -4688,7 +4724,8 @@ async def finalize_rule_creation(query, user):
             modify_dict.get('header_enabled', False),
             modify_dict.get('footer_enabled', False),
             modify_dict.get('replace_enabled', False),
-            modify_dict.get('watermark_enabled', False)
+            modify_dict.get('watermark_enabled', False),
+            modify_dict.get('apply_spoiler', False)
         ])
 
         # Determine actual mode being used
@@ -4934,7 +4971,8 @@ async def handle_rule_callback(query, user, data: str):
             modify.get('header_enabled', False),
             modify.get('footer_enabled', False),
             modify.get('replace_enabled', False),
-            modify.get('watermark_enabled', False)
+            modify.get('watermark_enabled', False),
+            modify.get('apply_spoiler', False)
         ])
 
         # Determine actual mode being used
@@ -5074,7 +5112,8 @@ async def handle_rule_callback(query, user, data: str):
             modify.get('header_enabled', False),
             modify.get('footer_enabled', False),
             modify.get('replace_enabled', False),
-            modify.get('watermark_enabled', False)
+            modify.get('watermark_enabled', False),
+            modify.get('apply_spoiler', False)
         ])
 
         # Determine actual mode being used
