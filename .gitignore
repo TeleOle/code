@@ -1,0 +1,83 @@
+# ============================================
+# Telegram Auto-Forward Bot - Git Ignore
+# ============================================
+
+# Environment Variables (IMPORTANT: Never commit!)
+.env
+.env.local
+.env.production
+
+# Telegram Session Files (User credentials)
+*.session
+*.session-journal
+user_sessions/
+sessions/
+
+# Database Files
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+*.out
+
+# Temporary Files
+temp/
+tmp/
+*.tmp
+.cache/
+
+# Build Files
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Watermark logos (user uploaded)
+watermark_logos/
+*.watermark
+
+# OS Files
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Backup Files
+*.bak
+*.backup
+*.old
+
+# Keep directory structure
+!.gitkeep
